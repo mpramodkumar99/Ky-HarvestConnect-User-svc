@@ -3,6 +3,8 @@ import type {
   User, CreateUserInput, UpdateUserInput,
   Address, CreateAddressInput, UpdateAddressInput,
   Seller, CreateSellerInput, UpdateSellerInput,
+  SellerMember, CreateSellerMemberInput, UpdateSellerMemberInput,
+  BankAccount, CreateBankAccountInput, UpdateBankAccountInput,
   GeoPoint,
 } from './types.js';
 
@@ -34,7 +36,7 @@ export class InMemoryUserRepository implements UserRepository {
     const user: User = {
       ...input,
       id:        randomUUID(),
-      verified:  false, // always server-managed; never trust the caller
+      verified:  false,
       createdAt: now,
       updatedAt: now,
     };
@@ -73,8 +75,6 @@ export class InMemoryAddressRepository implements AddressRepository {
     return this.store.get(id) ?? null;
   }
 
-  // Unsets isDefault on every address owned by the user.
-  // Called before creating/updating a new default so there is at most one at a time.
   async clearDefaultForUser(userId: string): Promise<void> {
     for (const address of this.store.values()) {
       if (address.userId === userId && address.isDefault) {
@@ -113,11 +113,19 @@ export class InMemoryAddressRepository implements AddressRepository {
 // ── SellerRepository ──────────────────────────────────────────────────────────
 
 export interface SellerRepository {
-  findAll(filters?: { type?: string; verified?: boolean }): Promise<Seller[]>;
+  findAll(filters?: {
+    type?: string;
+    verified?: boolean;
+    userId?: string;
+    phone?: string;
+  }): Promise<Seller[]>;
   findById(id: string): Promise<Seller | null>;
   findByPhone(phone: string): Promise<Seller | null>;
+  findByUserId(userId: string): Promise<Seller[]>;
   create(input: CreateSellerInput, coords: GeoPoint): Promise<Seller>;
   update(id: string, input: UpdateSellerInput): Promise<Seller | null>;
+  addDocument(id: string, url: string): Promise<Seller | null>;
+  removeDocument(id: string, url: string): Promise<Seller | null>;
   verify(id: string): Promise<Seller | null>;
 }
 
@@ -126,10 +134,17 @@ export class InMemorySellerRepository implements SellerRepository {
 
   constructor() { this.seed(); }
 
-  async findAll(filters?: { type?: string; verified?: boolean }): Promise<Seller[]> {
+  async findAll(filters?: {
+    type?: string;
+    verified?: boolean;
+    userId?: string;
+    phone?: string;
+  }): Promise<Seller[]> {
     let results = [...this.store.values()];
     if (filters?.type     !== undefined) results = results.filter(s => s.type     === filters.type);
     if (filters?.verified !== undefined) results = results.filter(s => s.verified === filters.verified);
+    if (filters?.userId   !== undefined) results = results.filter(s => s.userId   === filters.userId);
+    if (filters?.phone    !== undefined) results = results.filter(s => s.phone    === filters.phone);
     return results;
   }
 
@@ -144,13 +159,17 @@ export class InMemorySellerRepository implements SellerRepository {
     return null;
   }
 
+  async findByUserId(userId: string): Promise<Seller[]> {
+    return [...this.store.values()].filter(s => s.userId === userId);
+  }
+
   async create(input: CreateSellerInput, coords: GeoPoint): Promise<Seller> {
     const now = new Date().toISOString();
     const seller: Seller = {
       ...input,
       ...coords,
       id:           randomUUID(),
-      verified:     false,  // always false on create — admin-only flip
+      verified:     false,
       documentUrls: [],
       createdAt:    now,
       updatedAt:    now,
@@ -167,7 +186,31 @@ export class InMemorySellerRepository implements SellerRepository {
     return updated;
   }
 
-  // Sets verified:true and records the timestamp. Only this method may set these fields.
+  async addDocument(id: string, url: string): Promise<Seller | null> {
+    const existing = this.store.get(id);
+    if (!existing) return null;
+    if (existing.documentUrls.includes(url)) return existing; // idempotent
+    const updated: Seller = {
+      ...existing,
+      documentUrls: [...existing.documentUrls, url],
+      updatedAt: new Date().toISOString(),
+    };
+    this.store.set(id, updated);
+    return updated;
+  }
+
+  async removeDocument(id: string, url: string): Promise<Seller | null> {
+    const existing = this.store.get(id);
+    if (!existing) return null;
+    const updated: Seller = {
+      ...existing,
+      documentUrls: existing.documentUrls.filter(u => u !== url),
+      updatedAt: new Date().toISOString(),
+    };
+    this.store.set(id, updated);
+    return updated;
+  }
+
   async verify(id: string): Promise<Seller | null> {
     const existing = this.store.get(id);
     if (!existing) return null;
@@ -178,11 +221,10 @@ export class InMemorySellerRepository implements SellerRepository {
   }
 
   // ── Seed data ──────────────────────────────────────────────────────────────
-  // Mirrors the seller IDs used in catalog-svc seed data so the inter-service
-  // verification check resolves correctly during local development.
+  // Mirrors seller IDs used in catalog-svc seed data so inter-service lookups
+  // resolve correctly during local development.
   private seed() {
     const now = new Date().toISOString();
-
     type SeedSeller = Omit<Seller, 'id' | 'createdAt' | 'updatedAt'>;
 
     const sellers: SeedSeller[] = [
@@ -190,6 +232,7 @@ export class InMemorySellerRepository implements SellerRepository {
         name: 'Nizamabad Agri Co-op', type: 'farmer',
         phone: '+919000000101', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
+        deliveryZones: ['state', 'national'],
         verified: true, verifiedAt: now, documentUrls: [],
         fssaiNumber: '10019042000101',
       },
@@ -197,12 +240,14 @@ export class InMemorySellerRepository implements SellerRepository {
         name: 'Krishna Farms', type: 'farmer',
         phone: '+919000000103', location: 'Khammam, Telangana', pincode: '507001',
         lat: 17.245, lng: 80.152,
+        deliveryZones: ['district', 'state'],
         verified: true, verifiedAt: now, documentUrls: [],
       },
       {
         name: 'Spice Route Nizamabad', type: 'farmer',
         phone: '+919000000105', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
+        deliveryZones: ['state', 'national'],
         verified: true, verifiedAt: now, documentUrls: [],
         fssaiNumber: '10019042000105',
       },
@@ -210,12 +255,14 @@ export class InMemorySellerRepository implements SellerRepository {
         name: 'Adilabad Spice Farm', type: 'farmer',
         phone: '+919000000107', location: 'Adilabad, Telangana', pincode: '504001',
         lat: 19.668, lng: 78.531,
+        deliveryZones: ['district', 'state'],
         verified: true, verifiedAt: now, documentUrls: [],
       },
       {
         name: 'Godavari Aqua Farm', type: 'farmer',
         phone: '+919000000111', location: 'Bhadradri, Telangana', pincode: '507101',
         lat: 17.550, lng: 80.630,
+        deliveryZones: ['state', 'national'],
         verified: true, verifiedAt: now, documentUrls: [],
         fssaiNumber: '10019042000111',
       },
@@ -223,6 +270,7 @@ export class InMemorySellerRepository implements SellerRepository {
         name: 'Desi Dairy Armoor', type: 'dairy',
         phone: '+919000000112', location: 'Armoor, Nizamabad', pincode: '503111',
         lat: 18.435, lng: 78.330,
+        deliveryZones: ['mandal', 'district'],
         verified: true, verifiedAt: now, documentUrls: [],
         fssaiNumber: '10019042000112',
       },
@@ -230,6 +278,7 @@ export class InMemorySellerRepository implements SellerRepository {
         name: 'Amma Kitchen', type: 'homefood',
         phone: '+919000000113', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
+        deliveryZones: ['mandal', 'district', 'state'],
         verified: true, verifiedAt: now, documentUrls: [],
         fssaiNumber: '10019042000113',
       },
@@ -237,6 +286,7 @@ export class InMemorySellerRepository implements SellerRepository {
         name: 'Village Mill Nizamabad', type: 'homefood',
         phone: '+919000000115', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
+        deliveryZones: ['state', 'national'],
         verified: true, verifiedAt: now, documentUrls: [],
         fssaiNumber: '10019042000115',
       },
@@ -244,37 +294,152 @@ export class InMemorySellerRepository implements SellerRepository {
         name: 'Pochampally Weavers', type: 'artisan',
         phone: '+919000000124', location: 'Nalgonda, Telangana', pincode: '508284',
         lat: 17.362, lng: 79.058,
+        deliveryZones: ['state', 'national'],
         verified: true, verifiedAt: now, documentUrls: [],
       },
       {
         name: 'Nalgonda Building Supplies', type: 'artisan',
         phone: '+919000000121', location: 'Nalgonda, Telangana', pincode: '508001',
         lat: 17.166, lng: 79.261,
+        deliveryZones: ['district', 'state'],
         verified: true, verifiedAt: now, documentUrls: [],
       },
       {
-        name: 'Quick Fix Electricals', type: 'artisan',
+        name: 'Quick Fix Electricals', type: 'trades',
         phone: '+919000000201', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
+        deliveryZones: ['mandal'],
         verified: true, verifiedAt: now, documentUrls: [],
       },
       {
-        name: 'CoolTech Services', type: 'artisan',
+        name: 'CoolTech Services', type: 'trades',
         phone: '+919000000207', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
+        deliveryZones: ['mandal', 'district'],
         verified: true, verifiedAt: now, documentUrls: [],
       },
       {
-        name: 'AutoCare Nizamabad', type: 'artisan',
+        name: 'AutoCare Nizamabad', type: 'trades',
         phone: '+919000000212', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
+        deliveryZones: ['mandal', 'district'],
         verified: true, verifiedAt: now, documentUrls: [],
       },
     ];
 
-    for (const s of sellers) {
-      const seller: Seller = { ...s, id: randomUUID(), createdAt: now, updatedAt: now };
-      this.store.set(seller.id, seller);
+    for (const seller of sellers) {
+      const id = randomUUID();
+      this.store.set(id, { ...seller, id, createdAt: now, updatedAt: now });
     }
+  }
+}
+
+// ── SellerMemberRepository ────────────────────────────────────────────────────
+
+export interface SellerMemberRepository {
+  findBySellerId(sellerId: string): Promise<SellerMember[]>;
+  findById(id: string): Promise<SellerMember | null>;
+  findBySellerAndPhone(sellerId: string, phone: string): Promise<SellerMember | null>;
+  create(sellerId: string, input: CreateSellerMemberInput): Promise<SellerMember>;
+  update(id: string, input: UpdateSellerMemberInput): Promise<SellerMember | null>;
+  activate(id: string, userId: string): Promise<SellerMember | null>;
+  delete(id: string): Promise<boolean>;
+}
+
+export class InMemorySellerMemberRepository implements SellerMemberRepository {
+  private store = new Map<string, SellerMember>();
+
+  async findBySellerId(sellerId: string): Promise<SellerMember[]> {
+    return [...this.store.values()].filter(m => m.sellerId === sellerId);
+  }
+
+  async findById(id: string): Promise<SellerMember | null> {
+    return this.store.get(id) ?? null;
+  }
+
+  async findBySellerAndPhone(sellerId: string, phone: string): Promise<SellerMember | null> {
+    for (const m of this.store.values()) {
+      if (m.sellerId === sellerId && m.phone === phone) return m;
+    }
+    return null;
+  }
+
+  async create(sellerId: string, input: CreateSellerMemberInput): Promise<SellerMember> {
+    const member: SellerMember = {
+      ...input,
+      id:         randomUUID(),
+      sellerId,
+      status:     'pending',
+      invitedAt:  new Date().toISOString(),
+    };
+    this.store.set(member.id, member);
+    return member;
+  }
+
+  async update(id: string, input: UpdateSellerMemberInput): Promise<SellerMember | null> {
+    const existing = this.store.get(id);
+    if (!existing) return null;
+    const updated: SellerMember = { ...existing, ...input };
+    this.store.set(id, updated);
+    return updated;
+  }
+
+  async activate(id: string, userId: string): Promise<SellerMember | null> {
+    const existing = this.store.get(id);
+    if (!existing) return null;
+    const updated: SellerMember = {
+      ...existing,
+      userId,
+      status:   'active',
+      joinedAt: new Date().toISOString(),
+    };
+    this.store.set(id, updated);
+    return updated;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    return this.store.delete(id);
+  }
+}
+
+// ── BankAccountRepository ─────────────────────────────────────────────────────
+
+export interface BankAccountRepository {
+  findBySellerId(sellerId: string): Promise<BankAccount | null>;
+  upsert(sellerId: string, input: CreateBankAccountInput): Promise<BankAccount>;
+  update(sellerId: string, input: UpdateBankAccountInput): Promise<BankAccount | null>;
+}
+
+export class InMemoryBankAccountRepository implements BankAccountRepository {
+  private store = new Map<string, BankAccount>(); // keyed by sellerId
+
+  async findBySellerId(sellerId: string): Promise<BankAccount | null> {
+    return this.store.get(sellerId) ?? null;
+  }
+
+  async upsert(sellerId: string, input: CreateBankAccountInput): Promise<BankAccount> {
+    const now = new Date().toISOString();
+    const existing = this.store.get(sellerId);
+    const account: BankAccount = {
+      ...input,
+      id:        existing?.id ?? randomUUID(),
+      sellerId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.store.set(sellerId, account);
+    return account;
+  }
+
+  async update(sellerId: string, input: UpdateBankAccountInput): Promise<BankAccount | null> {
+    const existing = this.store.get(sellerId);
+    if (!existing) return null;
+    const updated: BankAccount = {
+      ...existing,
+      ...input,
+      updatedAt: new Date().toISOString(),
+    };
+    this.store.set(sellerId, updated);
+    return updated;
   }
 }

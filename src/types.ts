@@ -1,3 +1,13 @@
+// ── Shared ────────────────────────────────────────────────────────────────────
+
+export interface GeoPoint {
+  lat: number;
+  lng: number;
+}
+
+// Delivery coverage tiers — mirrors catalog-svc definition
+export type ShipsTo = 'mandal' | 'district' | 'state' | 'national';
+
 // ── User ──────────────────────────────────────────────────────────────────────
 
 export type UserType = 'buyer' | 'seller';
@@ -47,23 +57,26 @@ export type UpdateAddressInput = Partial<CreateAddressInput>;
 
 // ── Seller ────────────────────────────────────────────────────────────────────
 
-export type SellerType = 'farmer' | 'artisan' | 'dairy' | 'homefood';
+export type SellerType = 'farmer' | 'artisan' | 'dairy' | 'homefood' | 'trades';
 
 export interface Seller {
   id: string;
-  userId?: string;        // optional link to a User account (same person)
+  userId?: string;           // optional link to a User account (same person)
   name: string;
   type: SellerType;
-  phone: string;          // E.164, natural unique key
+  phone: string;             // E.164, natural unique key
   email?: string;
-  location: string;       // display string e.g. "Nizamabad, Telangana"
-  pincode: string;        // stored so re-geocoding is possible on location updates
-  lat: number;            // from GeocodePort
-  lng: number;            // from GeocodePort
+  description?: string;      // store description shown in Store Settings
+  imageUrl?: string;         // store logo / photo URL
+  location: string;          // display string e.g. "Nizamabad, Telangana"
+  pincode: string;           // stored so re-geocoding is possible on location updates
+  lat: number;               // from GeocodePort
+  lng: number;               // from GeocodePort
+  deliveryZones: ShipsTo[];  // seller-level coverage; individual products may narrow this
   fssaiNumber?: string;
-  verified: boolean;      // always false on create; admin-only flip
-  verifiedAt?: string;    // ISO timestamp set at the moment of verification
-  documentUrls: string[]; // uploaded via StoragePort (FSSAI scan, Aadhaar etc.)
+  verified: boolean;         // always false on create; admin-only flip
+  verifiedAt?: string;       // ISO timestamp set at the moment of verification
+  documentUrls: string[];    // uploaded via StoragePort (FSSAI scan, Aadhaar etc.)
   createdAt: string;
   updatedAt: string;
 }
@@ -76,11 +89,49 @@ export type CreateSellerInput = Omit<
 >;
 
 // phone immutable after creation
+// documentUrls managed via dedicated /documents endpoint — not patchable here
 export type UpdateSellerInput = Partial<Omit<CreateSellerInput, 'phone'>>;
 
-// ── Shared ────────────────────────────────────────────────────────────────────
+// ── SellerMember ──────────────────────────────────────────────────────────────
+// Links a user (by phone) to a seller account with a role.
+// Invites are created by an owner/admin; status starts as 'pending' until the
+// invited user logs in and accepts.
 
-export interface GeoPoint {
-  lat: number;
-  lng: number;
+export type SellerRole = 'owner' | 'manager' | 'staff';
+export type MemberStatus = 'active' | 'pending';
+
+export interface SellerMember {
+  id: string;
+  sellerId: string;
+  userId?: string;      // set once the invited person has a User account
+  name: string;         // denormalized — avoids a User lookup on every team list
+  phone: string;        // used to match the invite when the invitee logs in
+  role: SellerRole;
+  status: MemberStatus;
+  invitedAt: string;    // ISO timestamp
+  joinedAt?: string;    // set when status transitions to 'active'
 }
+
+export type CreateSellerMemberInput = Omit<
+  SellerMember, 'id' | 'sellerId' | 'status' | 'invitedAt' | 'joinedAt'
+>;
+
+export type UpdateSellerMemberInput = Pick<SellerMember, 'role'>;
+
+// ── BankAccount ───────────────────────────────────────────────────────────────
+// Payment details for a seller. At most one per seller (upsert semantics).
+
+export interface BankAccount {
+  id: string;
+  sellerId: string;
+  accountHolderName: string;
+  accountNumber: string;     // stored in full; serve masked (last 4) to the UI
+  ifscCode: string;
+  bankName: string;
+  upiId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateBankAccountInput = Omit<BankAccount, 'id' | 'sellerId' | 'createdAt' | 'updatedAt'>;
+export type UpdateBankAccountInput = Partial<CreateBankAccountInput>;

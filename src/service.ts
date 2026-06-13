@@ -2,16 +2,17 @@ import type {
   User, CreateUserInput, UpdateUserInput,
   Address, CreateAddressInput, UpdateAddressInput,
   Seller, CreateSellerInput, UpdateSellerInput,
+  SellerMember, CreateSellerMemberInput, UpdateSellerMemberInput,
+  BankAccount, CreateBankAccountInput, UpdateBankAccountInput,
 } from './types.js';
 import type {
-  UserRepository, AddressRepository, SellerRepository,
+  UserRepository, AddressRepository,
+  SellerRepository, SellerMemberRepository, BankAccountRepository,
 } from './repository.js';
 import type { GeocodePort } from './ports.js';
 
 // ── Domain errors ─────────────────────────────────────────────────────────────
 // Thrown by services; caught by route handlers and mapped to HTTP status codes.
-// Keeping error classification out of the HTTP layer means business logic is
-// testable without spinning up a server.
 
 export class NotFoundError extends Error {
   constructor(msg: string) { super(msg); this.name = 'NotFoundError'; }
@@ -57,22 +58,14 @@ export class UserService {
   // ── Address operations ───────────────────────────────────────────────────
 
   async listAddresses(userId: string): Promise<Address[]> {
-    await this.getUser(userId); // validates user exists before querying addresses
+    await this.getUser(userId);
     return this.addresses.findByUserId(userId);
   }
 
   async addAddress(userId: string, input: CreateAddressInput): Promise<Address> {
     await this.getUser(userId);
-
     const coords = await this.geocoder.fromPincode(input.pincode);
-
-    // Single-default rule: unset the current default before setting the new one.
-    // clearDefaultForUser must run before create so there is never a window
-    // where two addresses are simultaneously marked as default.
-    if (input.isDefault) {
-      await this.addresses.clearDefaultForUser(userId);
-    }
-
+    if (input.isDefault) await this.addresses.clearDefaultForUser(userId);
     return this.addresses.create(userId, input, coords);
   }
 
@@ -83,24 +76,15 @@ export class UserService {
   ): Promise<Address> {
     const existing = await this.addresses.findById(addrId);
     if (!existing) throw new NotFoundError('Address not found');
-
-    // Ownership check — an address belongs to one user; another user may not edit it
     if (existing.userId !== userId) throw new ForbiddenError('Address does not belong to this user');
 
-    // Re-geocode only when the pincode changes; avoids an unnecessary network call
     let coordPatch: { lat?: number; lng?: number } = {};
     if (input.pincode && input.pincode !== existing.pincode) {
-      const coords = await this.geocoder.fromPincode(input.pincode);
-      coordPatch = coords;
+      coordPatch = await this.geocoder.fromPincode(input.pincode);
     }
 
-    // Single-default rule applies to updates too
-    if (input.isDefault) {
-      await this.addresses.clearDefaultForUser(userId);
-    }
-
-    const updated = await this.addresses.update(addrId, { ...input, ...coordPatch });
-    return updated!;
+    if (input.isDefault) await this.addresses.clearDefaultForUser(userId);
+    return (await this.addresses.update(addrId, { ...input, ...coordPatch }))!;
   }
 
   async deleteAddress(userId: string, addrId: string): Promise<void> {
@@ -116,11 +100,24 @@ export class UserService {
 export class SellerService {
   constructor(
     private sellers: SellerRepository,
+    private members: SellerMemberRepository,
+    private bankAccounts: BankAccountRepository,
     private geocoder: GeocodePort,
   ) {}
 
-  async listSellers(filters?: { type?: string; verified?: boolean }): Promise<Seller[]> {
+  // ── Seller operations ────────────────────────────────────────────────────
+
+  async listSellers(filters?: {
+    type?: string;
+    verified?: boolean;
+    userId?: string;
+    phone?: string;
+  }): Promise<Seller[]> {
     return this.sellers.findAll(filters);
+  }
+
+  async listSellersByUser(userId: string): Promise<Seller[]> {
+    return this.sellers.findByUserId(userId);
   }
 
   async createSeller(input: CreateSellerInput): Promise<Seller> {
@@ -140,22 +137,95 @@ export class SellerService {
     const existing = await this.sellers.findById(id);
     if (!existing) throw new NotFoundError('Seller not found');
 
-    // Re-geocode when pincode changes (seller moved their operation to a new location)
     let coordPatch: { lat?: number; lng?: number } = {};
     if (input.pincode && input.pincode !== existing.pincode) {
-      const coords = await this.geocoder.fromPincode(input.pincode);
-      coordPatch = coords;
+      coordPatch = await this.geocoder.fromPincode(input.pincode);
     }
 
-    const updated = await this.sellers.update(id, { ...input, ...coordPatch });
-    return updated!;
+    return (await this.sellers.update(id, { ...input, ...coordPatch }))!;
   }
 
-  // Admin-only operation — sets verified:true and records verifiedAt timestamp.
-  // The route enforces the X-Admin-Key header check; the service is auth-agnostic.
   async verifySeller(id: string): Promise<Seller> {
     const updated = await this.sellers.verify(id);
     if (!updated) throw new NotFoundError('Seller not found');
+    return updated;
+  }
+
+  // ── Document operations ──────────────────────────────────────────────────
+
+  async addDocument(sellerId: string, url: string): Promise<Seller> {
+    const existing = await this.sellers.findById(sellerId);
+    if (!existing) throw new NotFoundError('Seller not found');
+    return (await this.sellers.addDocument(sellerId, url))!;
+  }
+
+  async removeDocument(sellerId: string, url: string): Promise<Seller> {
+    const existing = await this.sellers.findById(sellerId);
+    if (!existing) throw new NotFoundError('Seller not found');
+    return (await this.sellers.removeDocument(sellerId, url))!;
+  }
+
+  // ── Team member operations ───────────────────────────────────────────────
+
+  async listMembers(sellerId: string): Promise<SellerMember[]> {
+    await this.getSeller(sellerId); // validates seller exists
+    return this.members.findBySellerId(sellerId);
+  }
+
+  async inviteMember(
+    sellerId: string,
+    input: CreateSellerMemberInput,
+  ): Promise<SellerMember> {
+    await this.getSeller(sellerId);
+    const existing = await this.members.findBySellerAndPhone(sellerId, input.phone);
+    if (existing) throw new ConflictError('This phone number is already a member of this seller account');
+    return this.members.create(sellerId, input);
+  }
+
+  async updateMemberRole(
+    sellerId: string,
+    memberId: string,
+    input: UpdateSellerMemberInput,
+  ): Promise<SellerMember> {
+    const member = await this.members.findById(memberId);
+    if (!member) throw new NotFoundError('Member not found');
+    if (member.sellerId !== sellerId) throw new ForbiddenError('Member does not belong to this seller account');
+    return (await this.members.update(memberId, input))!;
+  }
+
+  async activateMember(sellerId: string, memberId: string, userId: string): Promise<SellerMember> {
+    const member = await this.members.findById(memberId);
+    if (!member) throw new NotFoundError('Member not found');
+    if (member.sellerId !== sellerId) throw new ForbiddenError('Member does not belong to this seller account');
+    if (member.status === 'active') throw new ConflictError('Member is already active');
+    return (await this.members.activate(memberId, userId))!;
+  }
+
+  async removeMember(sellerId: string, memberId: string): Promise<void> {
+    const member = await this.members.findById(memberId);
+    if (!member) throw new NotFoundError('Member not found');
+    if (member.sellerId !== sellerId) throw new ForbiddenError('Member does not belong to this seller account');
+    await this.members.delete(memberId);
+  }
+
+  // ── Bank account operations ──────────────────────────────────────────────
+
+  async getBankAccount(sellerId: string): Promise<BankAccount> {
+    await this.getSeller(sellerId);
+    const account = await this.bankAccounts.findBySellerId(sellerId);
+    if (!account) throw new NotFoundError('No bank account found for this seller');
+    return account;
+  }
+
+  async setBankAccount(sellerId: string, input: CreateBankAccountInput): Promise<BankAccount> {
+    await this.getSeller(sellerId);
+    return this.bankAccounts.upsert(sellerId, input);
+  }
+
+  async updateBankAccount(sellerId: string, input: UpdateBankAccountInput): Promise<BankAccount> {
+    await this.getSeller(sellerId);
+    const updated = await this.bankAccounts.update(sellerId, input);
+    if (!updated) throw new NotFoundError('No bank account found for this seller');
     return updated;
   }
 }
