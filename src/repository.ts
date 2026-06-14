@@ -380,6 +380,8 @@ export interface SellerMemberRepository {
   findBySellerId(sellerId: string): Promise<SellerMember[]>;
   findById(id: string): Promise<SellerMember | null>;
   findBySellerAndPhone(sellerId: string, phone: string): Promise<SellerMember | null>;
+  findActiveByUserId(userId: string): Promise<SellerMember[]>;
+  findPendingByPhone(phone: string): Promise<SellerMember[]>;
   create(sellerId: string, input: CreateSellerMemberInput): Promise<SellerMember>;
   update(id: string, input: UpdateSellerMemberInput): Promise<SellerMember | null>;
   activate(id: string, userId: string): Promise<SellerMember | null>;
@@ -402,6 +404,14 @@ export class InMemorySellerMemberRepository implements SellerMemberRepository {
       if (m.sellerId === sellerId && m.phone === phone) return m;
     }
     return null;
+  }
+
+  async findActiveByUserId(userId: string): Promise<SellerMember[]> {
+    return [...this.store.values()].filter(m => m.userId === userId && m.status === 'active');
+  }
+
+  async findPendingByPhone(phone: string): Promise<SellerMember[]> {
+    return [...this.store.values()].filter(m => m.phone === phone && m.status === 'pending');
   }
 
   async create(sellerId: string, input: CreateSellerMemberInput): Promise<SellerMember> {

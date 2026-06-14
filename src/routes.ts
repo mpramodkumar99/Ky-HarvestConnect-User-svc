@@ -382,10 +382,24 @@ export function registerCrossRoutes(
   app: FastifyInstance,
   sellerService: SellerService,
 ) {
-  // GET /v1/users/:id/sellers — all seller accounts linked to a user
+  // GET /v1/users/:id/sellers — owned + active-member stores for a user
+  // Each entry includes memberRole ('owner' | 'manager' | 'staff')
   app.get('/v1/users/:id/sellers', async (request, reply) => {
     const { id } = request.params as { id: string };
     const sellers = await sellerService.listSellersByUser(id);
     return reply.send({ success: true, data: sellers, meta: { total: sellers.length } });
+  });
+
+  // GET /v1/members/pending?phone=E164 — pending invites for a phone number
+  app.get('/v1/members/pending', async (request, reply) => {
+    const { phone } = request.query as { phone?: string };
+    if (!phone) {
+      return reply.status(400).send({
+        success: false,
+        error: { type: 'validation_error', title: 'phone query param is required', status: 400 },
+      });
+    }
+    const invites = await sellerService.getPendingInvites(phone);
+    return reply.send({ success: true, data: invites, meta: { total: invites.length } });
   });
 }

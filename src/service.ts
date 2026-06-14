@@ -1,7 +1,7 @@
 import type {
   User, CreateUserInput, UpdateUserInput,
   Address, CreateAddressInput, UpdateAddressInput,
-  Seller, CreateSellerInput, UpdateSellerInput,
+  Seller, CreateSellerInput, UpdateSellerInput, SellerRole,
   SellerMember, CreateSellerMemberInput, UpdateSellerMemberInput,
   BankAccount, CreateBankAccountInput, UpdateBankAccountInput,
 } from './types.js';
@@ -120,8 +120,36 @@ export class SellerService {
     return this.sellers.findAll(filters);
   }
 
-  async listSellersByUser(userId: string): Promise<Seller[]> {
-    return this.sellers.findByUserId(userId);
+  async listSellersByUser(userId: string): Promise<Array<Seller & { memberRole: SellerRole }>> {
+    // Owned stores
+    const ownedSellers = await this.sellers.findByUserId(userId);
+    const owned = ownedSellers.map(s => ({ ...s, memberRole: 'owner' as SellerRole }));
+
+    // Stores where user is an active team member (invited + accepted)
+    const memberships = await this.members.findActiveByUserId(userId);
+    const memberSellers = await Promise.all(
+      memberships
+        .filter(m => !ownedSellers.some(o => o.id === m.sellerId)) // dedupe
+        .map(async m => {
+          const seller = await this.sellers.findById(m.sellerId);
+          if (!seller) return null;
+          return { ...seller, memberRole: m.role };
+        }),
+    );
+
+    return [...owned, ...(memberSellers.filter(Boolean) as Array<Seller & { memberRole: SellerRole }>)];
+  }
+
+  async getPendingInvites(phone: string): Promise<Array<{ id: string; sellerId: string; sellerName: string; role: SellerRole; invitedAt: string }>> {
+    const members = await this.members.findPendingByPhone(phone);
+    const results = await Promise.all(
+      members.map(async m => {
+        const seller = await this.sellers.findById(m.sellerId);
+        if (!seller) return null;
+        return { id: m.id, sellerId: m.sellerId, sellerName: seller.name, role: m.role, invitedAt: m.invitedAt };
+      }),
+    );
+    return results.filter(Boolean) as Array<{ id: string; sellerId: string; sellerName: string; role: SellerRole; invitedAt: string }>;
   }
 
   async createSeller(input: CreateSellerInput): Promise<Seller> {
