@@ -258,6 +258,7 @@ export class InMemorySellerRepository implements SellerRepository {
       },
       {
         id: 'seller-105',
+        userId: 'user-s105',
         name: 'Spice Route Nizamabad', type: 'farmer',
         phone: '+919000000105', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
@@ -288,6 +289,7 @@ export class InMemorySellerRepository implements SellerRepository {
       },
       {
         id: 'seller-112',
+        userId: 'user-s112',
         name: 'Desi Dairy Armoor', type: 'dairy',
         phone: '+919000000112', location: 'Armoor, Nizamabad', pincode: '503111',
         lat: 18.435, lng: 78.330,
@@ -299,6 +301,7 @@ export class InMemorySellerRepository implements SellerRepository {
       },
       {
         id: 'seller-113',
+        userId: 'user-s113',
         name: 'Amma Kitchen', type: 'homefood',
         phone: '+919000000113', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
