@@ -121,23 +121,27 @@ export class SellerService {
   }
 
   async listSellersByUser(userId: string): Promise<Array<Seller & { memberRole: SellerRole }>> {
-    // Owned stores
+    // Owned stores — always loaded first; membership lookup is additive
     const ownedSellers = await this.sellers.findByUserId(userId);
     const owned = ownedSellers.map(s => ({ ...s, memberRole: 'owner' as SellerRole }));
 
     // Stores where user is an active team member (invited + accepted)
-    const memberships = await this.members.findActiveByUserId(userId);
-    const memberSellers = await Promise.all(
-      memberships
-        .filter(m => !ownedSellers.some(o => o.id === m.sellerId)) // dedupe
-        .map(async m => {
-          const seller = await this.sellers.findById(m.sellerId);
-          if (!seller) return null;
-          return { ...seller, memberRole: m.role };
-        }),
-    );
-
-    return [...owned, ...(memberSellers.filter(Boolean) as Array<Seller & { memberRole: SellerRole }>)];
+    // Wrapped in try-catch so a failure here never hides the user's owned stores
+    try {
+      const memberships = await this.members.findActiveByUserId(userId);
+      const memberSellers = await Promise.all(
+        memberships
+          .filter(m => !ownedSellers.some(o => o.id === m.sellerId)) // dedupe
+          .map(async m => {
+            const seller = await this.sellers.findById(m.sellerId);
+            if (!seller) return null;
+            return { ...seller, memberRole: m.role };
+          }),
+      );
+      return [...owned, ...(memberSellers.filter(Boolean) as Array<Seller & { memberRole: SellerRole }>)];
+    } catch {
+      return owned;
+    }
   }
 
   async getPendingInvites(phone: string): Promise<Array<{ id: string; sellerId: string; sellerName: string; role: SellerRole; invitedAt: string }>> {
