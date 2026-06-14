@@ -17,8 +17,17 @@ export interface UserRepository {
   update(id: string, input: UpdateUserInput): Promise<User | null>;
 }
 
+// Dev seed users — matches AuthSvc FakeUserLookup so OTP flow works without signup
+const DEV_USERS: User[] = [
+  { id: 'user-s112', name: 'Seller 112',  phone: '+919000000112', type: 'seller', verified: true,  createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+  { id: 'user-s113', name: 'Seller 113',  phone: '+919000000113', type: 'seller', verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+  { id: 'user-s105', name: 'Seller 105',  phone: '+919000000105', type: 'seller', verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+  { id: 'user-b001', name: 'Buyer One',   phone: '+919000000001', type: 'buyer',  verified: true,  createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+  { id: 'user-b002', name: 'Buyer Two',   phone: '+919000000002', type: 'buyer',  verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+];
+
 export class InMemoryUserRepository implements UserRepository {
-  private store = new Map<string, User>();
+  private store = new Map<string, User>(DEV_USERS.map(u => [u.id, u]));
 
   async findById(id: string): Promise<User | null> {
     return this.store.get(id) ?? null;
