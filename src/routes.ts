@@ -386,8 +386,10 @@ export function registerCrossRoutes(
   // Each entry includes memberRole ('owner' | 'manager' | 'staff')
   app.get('/v1/users/:id/sellers', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const sellers = await sellerService.listSellersByUser(id);
-    return reply.send({ success: true, data: sellers, meta: { total: sellers.length } });
+    try {
+      const sellers = await sellerService.listSellersByUser(id);
+      return reply.send({ success: true, data: sellers, meta: { total: sellers.length } });
+    } catch (err) { return handleError(err, reply); }
   });
 
   // GET /v1/members/pending?phone=E164 — pending invites for a phone number
