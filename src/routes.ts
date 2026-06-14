@@ -46,6 +46,19 @@ export function registerUserRoutes(app: FastifyInstance, service: UserService) {
     } catch (err) { return handleError(err, reply); }
   });
 
+  // GET /v1/users?phone= — used by auth-svc to validate a phone before issuing OTP
+  app.get('/v1/users', async (request, reply) => {
+    const { phone } = request.query as { phone?: string };
+    if (phone) {
+      const user = await service.getUserByPhone(phone);
+      return reply.send({ success: true, data: user ? [user] : [] });
+    }
+    return reply.status(400).send({
+      success: false,
+      error: { type: 'validation_error', title: 'phone query param required', status: 400 },
+    });
+  });
+
   // GET /v1/users/:id
   app.get('/v1/users/:id', async (request, reply) => {
     const { id } = request.params as { id: string };

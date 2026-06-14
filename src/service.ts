@@ -49,6 +49,10 @@ export class UserService {
     return user;
   }
 
+  async getUserByPhone(phone: string): Promise<User | null> {
+    return this.users.findByPhone(phone);
+  }
+
   async updateUser(id: string, input: UpdateUserInput): Promise<User> {
     const updated = await this.users.update(id, input);
     if (!updated) throw new NotFoundError('User not found');
