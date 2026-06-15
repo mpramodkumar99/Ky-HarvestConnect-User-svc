@@ -7,6 +7,7 @@ import type {
   BankAccount, CreateBankAccountInput, UpdateBankAccountInput,
   GeoPoint,
 } from './types.js';
+import { loadDevData, persistUsers, persistSellers, persistMembers } from './dev-persistence.js';
 
 // ── UserRepository ────────────────────────────────────────────────────────────
 
@@ -17,17 +18,21 @@ export interface UserRepository {
   update(id: string, input: UpdateUserInput): Promise<User | null>;
 }
 
-// Dev seed users — matches AuthSvc FakeUserLookup so OTP flow works without signup
-const DEV_USERS: User[] = [
-  { id: 'user-s112', name: 'Seller 112',  phone: '+919000000112', type: 'seller', verified: true,  createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
-  { id: 'user-s113', name: 'Seller 113',  phone: '+919000000113', type: 'seller', verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
-  { id: 'user-s105', name: 'Seller 105',  phone: '+919000000105', type: 'seller', verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
-  { id: 'user-b001', name: 'Buyer One',   phone: '+919000000001', type: 'buyer',  verified: true,  createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
-  { id: 'user-b002', name: 'Buyer Two',   phone: '+919000000002', type: 'buyer',  verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+// Base dev seed users — overridden by dev-data.json if it exists
+const SEED_USERS: User[] = [
+  { id: 'user-s112', name: 'Seller 112', phone: '+919000000112', type: 'seller', verified: true,  createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+  { id: 'user-s113', name: 'Seller 113', phone: '+919000000113', type: 'seller', verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+  { id: 'user-s105', name: 'Seller 105', phone: '+919000000105', type: 'seller', verified: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
 ];
 
 export class InMemoryUserRepository implements UserRepository {
-  private store = new Map<string, User>(DEV_USERS.map(u => [u.id, u]));
+  private store: Map<string, User>;
+
+  constructor() {
+    const saved = loadDevData();
+    const users = saved?.users?.length ? saved.users : SEED_USERS;
+    this.store = new Map(users.map(u => [u.id, u]));
+  }
 
   async findById(id: string): Promise<User | null> {
     return this.store.get(id) ?? null;
@@ -42,14 +47,9 @@ export class InMemoryUserRepository implements UserRepository {
 
   async create(input: CreateUserInput): Promise<User> {
     const now = new Date().toISOString();
-    const user: User = {
-      ...input,
-      id:        randomUUID(),
-      verified:  false,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const user: User = { ...input, id: randomUUID(), verified: false, createdAt: now, updatedAt: now };
     this.store.set(user.id, user);
+    persistUsers([...this.store.values()]);
     return user;
   }
 
@@ -58,6 +58,7 @@ export class InMemoryUserRepository implements UserRepository {
     if (!existing) return null;
     const updated: User = { ...existing, ...input, updatedAt: new Date().toISOString() };
     this.store.set(id, updated);
+    persistUsers([...this.store.values()]);
     return updated;
   }
 }
@@ -139,9 +140,17 @@ export interface SellerRepository {
 }
 
 export class InMemorySellerRepository implements SellerRepository {
-  private store = new Map<string, Seller>();
+  private store: Map<string, Seller>;
 
-  constructor() { this.seed(); }
+  constructor() {
+    const saved = loadDevData();
+    if (saved?.sellers?.length) {
+      this.store = new Map(saved.sellers.map(s => [s.id, s]));
+    } else {
+      this.store = new Map<string, Seller>();
+      this.seed();
+    }
+  }
 
   async findAll(filters?: {
     type?: string;
@@ -175,15 +184,11 @@ export class InMemorySellerRepository implements SellerRepository {
   async create(input: CreateSellerInput, coords: GeoPoint): Promise<Seller> {
     const now = new Date().toISOString();
     const seller: Seller = {
-      ...input,
-      ...coords,
-      id:           randomUUID(),
-      verified:     false,
-      documentUrls: [],
-      createdAt:    now,
-      updatedAt:    now,
+      ...input, ...coords,
+      id: randomUUID(), verified: false, documentUrls: [], createdAt: now, updatedAt: now,
     };
     this.store.set(seller.id, seller);
+    persistSellers([...this.store.values()]);
     return seller;
   }
 
@@ -192,31 +197,26 @@ export class InMemorySellerRepository implements SellerRepository {
     if (!existing) return null;
     const updated: Seller = { ...existing, ...input, updatedAt: new Date().toISOString() };
     this.store.set(id, updated);
+    persistSellers([...this.store.values()]);
     return updated;
   }
 
   async addDocument(id: string, url: string): Promise<Seller | null> {
     const existing = this.store.get(id);
     if (!existing) return null;
-    if (existing.documentUrls.includes(url)) return existing; // idempotent
-    const updated: Seller = {
-      ...existing,
-      documentUrls: [...existing.documentUrls, url],
-      updatedAt: new Date().toISOString(),
-    };
+    if (existing.documentUrls.includes(url)) return existing;
+    const updated: Seller = { ...existing, documentUrls: [...existing.documentUrls, url], updatedAt: new Date().toISOString() };
     this.store.set(id, updated);
+    persistSellers([...this.store.values()]);
     return updated;
   }
 
   async removeDocument(id: string, url: string): Promise<Seller | null> {
     const existing = this.store.get(id);
     if (!existing) return null;
-    const updated: Seller = {
-      ...existing,
-      documentUrls: existing.documentUrls.filter(u => u !== url),
-      updatedAt: new Date().toISOString(),
-    };
+    const updated: Seller = { ...existing, documentUrls: existing.documentUrls.filter(u => u !== url), updatedAt: new Date().toISOString() };
     this.store.set(id, updated);
+    persistSellers([...this.store.values()]);
     return updated;
   }
 
@@ -226,70 +226,19 @@ export class InMemorySellerRepository implements SellerRepository {
     const now = new Date().toISOString();
     const verified: Seller = { ...existing, verified: true, verifiedAt: now, updatedAt: now };
     this.store.set(id, verified);
+    persistSellers([...this.store.values()]);
     return verified;
   }
 
   // ── Seed data ──────────────────────────────────────────────────────────────
-  // Fixed IDs match catalog-svc seed data and the seller app's store-context so
-  // inter-service lookups and UI store cards resolve correctly across restarts.
+  // Only sellers linked to a dev user account are seeded. Unlinked sellers
+  // were removed — they have no login path and pollute catalog lookups.
   private seed() {
     const now = new Date().toISOString();
-    type SeedSeller = Seller;
 
-    const sellers: SeedSeller[] = [
+    const sellers: Seller[] = [
       {
-        id: 'seller-101',
-        name: 'Nizamabad Agri Co-op', type: 'farmer',
-        phone: '+919000000101', location: 'Nizamabad, Telangana', pincode: '503001',
-        lat: 18.672, lng: 78.098,
-        deliveryZones: ['state', 'national'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        fssaiNumber: '10019042000101',
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-103',
-        name: 'Krishna Farms', type: 'farmer',
-        phone: '+919000000103', location: 'Khammam, Telangana', pincode: '507001',
-        lat: 17.245, lng: 80.152,
-        deliveryZones: ['district', 'state'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-105',
-        userId: 'user-s105',
-        name: 'Spice Route Nizamabad', type: 'farmer',
-        phone: '+919000000105', location: 'Nizamabad, Telangana', pincode: '503001',
-        lat: 18.672, lng: 78.098,
-        deliveryZones: ['state', 'national'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        fssaiNumber: '10019042000105',
-        description: 'Organic turmeric, chillies and seasonal vegetables from Nizamabad district.',
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-107',
-        name: 'Adilabad Spice Farm', type: 'farmer',
-        phone: '+919000000107', location: 'Adilabad, Telangana', pincode: '504001',
-        lat: 19.668, lng: 78.531,
-        deliveryZones: ['district', 'state'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-111',
-        name: 'Godavari Aqua Farm', type: 'farmer',
-        phone: '+919000000111', location: 'Bhadradri, Telangana', pincode: '507101',
-        lat: 17.550, lng: 80.630,
-        deliveryZones: ['state', 'national'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        fssaiNumber: '10019042000111',
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-112',
-        userId: 'user-s112',
+        id: 'seller-112', userId: 'user-s112',
         name: 'Desi Dairy Armoor', type: 'dairy',
         phone: '+919000000112', location: 'Armoor, Nizamabad', pincode: '503111',
         lat: 18.435, lng: 78.330,
@@ -300,8 +249,7 @@ export class InMemorySellerRepository implements SellerRepository {
         createdAt: now, updatedAt: now,
       },
       {
-        id: 'seller-113',
-        userId: 'user-s113',
+        id: 'seller-113', userId: 'user-s113',
         name: 'Amma Kitchen', type: 'homefood',
         phone: '+919000000113', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
@@ -312,58 +260,14 @@ export class InMemorySellerRepository implements SellerRepository {
         createdAt: now, updatedAt: now,
       },
       {
-        id: 'seller-115',
-        name: 'Village Mill Nizamabad', type: 'homefood',
-        phone: '+919000000115', location: 'Nizamabad, Telangana', pincode: '503001',
+        id: 'seller-105', userId: 'user-s105',
+        name: 'Spice Route Nizamabad', type: 'farmer',
+        phone: '+919000000105', location: 'Nizamabad, Telangana', pincode: '503001',
         lat: 18.672, lng: 78.098,
         deliveryZones: ['state', 'national'],
         verified: true, verifiedAt: now, documentUrls: [],
-        fssaiNumber: '10019042000115',
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-124',
-        name: 'Pochampally Weavers', type: 'artisan',
-        phone: '+919000000124', location: 'Nalgonda, Telangana', pincode: '508284',
-        lat: 17.362, lng: 79.058,
-        deliveryZones: ['state', 'national'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-121',
-        name: 'Nalgonda Building Supplies', type: 'artisan',
-        phone: '+919000000121', location: 'Nalgonda, Telangana', pincode: '508001',
-        lat: 17.166, lng: 79.261,
-        deliveryZones: ['district', 'state'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-201',
-        name: 'Quick Fix Electricals', type: 'trades',
-        phone: '+919000000201', location: 'Nizamabad, Telangana', pincode: '503001',
-        lat: 18.672, lng: 78.098,
-        deliveryZones: ['mandal'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-207',
-        name: 'CoolTech Services', type: 'trades',
-        phone: '+919000000207', location: 'Nizamabad, Telangana', pincode: '503001',
-        lat: 18.672, lng: 78.098,
-        deliveryZones: ['mandal', 'district'],
-        verified: true, verifiedAt: now, documentUrls: [],
-        createdAt: now, updatedAt: now,
-      },
-      {
-        id: 'seller-212',
-        name: 'AutoCare Nizamabad', type: 'trades',
-        phone: '+919000000212', location: 'Nizamabad, Telangana', pincode: '503001',
-        lat: 18.672, lng: 78.098,
-        deliveryZones: ['mandal', 'district'],
-        verified: true, verifiedAt: now, documentUrls: [],
+        fssaiNumber: '10019042000105',
+        description: 'Organic turmeric, chillies and seasonal vegetables from Nizamabad district.',
         createdAt: now, updatedAt: now,
       },
     ];
@@ -371,6 +275,7 @@ export class InMemorySellerRepository implements SellerRepository {
     for (const seller of sellers) {
       this.store.set(seller.id, seller);
     }
+    persistSellers([...this.store.values()]);
   }
 }
 
@@ -389,7 +294,13 @@ export interface SellerMemberRepository {
 }
 
 export class InMemorySellerMemberRepository implements SellerMemberRepository {
-  private store = new Map<string, SellerMember>();
+  private store: Map<string, SellerMember>;
+
+  constructor() {
+    const saved = loadDevData();
+    const members = saved?.members ?? [];
+    this.store = new Map(members.map(m => [m.id, m]));
+  }
 
   async findBySellerId(sellerId: string): Promise<SellerMember[]> {
     return [...this.store.values()].filter(m => m.sellerId === sellerId);
@@ -423,6 +334,7 @@ export class InMemorySellerMemberRepository implements SellerMemberRepository {
       invitedAt:  new Date().toISOString(),
     };
     this.store.set(member.id, member);
+    persistMembers([...this.store.values()]);
     return member;
   }
 
@@ -431,6 +343,7 @@ export class InMemorySellerMemberRepository implements SellerMemberRepository {
     if (!existing) return null;
     const updated: SellerMember = { ...existing, ...input };
     this.store.set(id, updated);
+    persistMembers([...this.store.values()]);
     return updated;
   }
 
@@ -444,11 +357,14 @@ export class InMemorySellerMemberRepository implements SellerMemberRepository {
       joinedAt: new Date().toISOString(),
     };
     this.store.set(id, updated);
+    persistMembers([...this.store.values()]);
     return updated;
   }
 
   async delete(id: string): Promise<boolean> {
-    return this.store.delete(id);
+    const deleted = this.store.delete(id);
+    if (deleted) persistMembers([...this.store.values()]);
+    return deleted;
   }
 }
 
