@@ -76,7 +76,7 @@ export const updateSellerSchema = createSellerSchema
   .omit({ phone: true })
   .partial()
   .extend({
-    vacationMode:  z.boolean().optional(),
+    status:        z.enum(['live', 'offline', 'vacation']).optional(),
     vacationUntil: z.string().optional(),
   });
 
