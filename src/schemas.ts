@@ -74,7 +74,11 @@ export const createSellerSchema = z.object({
 // documentUrls managed via dedicated /documents endpoint
 export const updateSellerSchema = createSellerSchema
   .omit({ phone: true })
-  .partial();
+  .partial()
+  .extend({
+    vacationMode:  z.boolean().optional(),
+    vacationUntil: z.string().optional(),
+  });
 
 // ── SellerMember schemas ──────────────────────────────────────────────────────
 

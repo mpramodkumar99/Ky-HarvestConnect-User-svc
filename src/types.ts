@@ -89,6 +89,8 @@ export interface Seller {
   verified: boolean;         // always false on create; admin-only flip
   verifiedAt?: string;       // ISO timestamp set at the moment of verification
   documentUrls: string[];    // uploaded via StoragePort (FSSAI scan, Aadhaar etc.)
+  vacationMode?: boolean;    // when true, new order intake is paused
+  vacationUntil?: string;    // optional ISO date — informational; not auto-enforced
   createdAt: string;
   updatedAt: string;
 }
