@@ -15,6 +15,7 @@ import { loadDevData, persistUsers, persistSellers, persistMembers, persistAgent
 export interface UserRepository {
   findById(id: string): Promise<User | null>;
   findByPhone(phone: string): Promise<User | null>;
+  findByPhoneAndType(phone: string, type: string): Promise<User | null>;
   create(input: CreateUserInput): Promise<User>;
   update(id: string, input: UpdateUserInput): Promise<User | null>;
 }
@@ -42,6 +43,13 @@ export class InMemoryUserRepository implements UserRepository {
   async findByPhone(phone: string): Promise<User | null> {
     for (const user of this.store.values()) {
       if (user.phone === phone) return user;
+    }
+    return null;
+  }
+
+  async findByPhoneAndType(phone: string, type: string): Promise<User | null> {
+    for (const user of this.store.values()) {
+      if (user.phone === phone && user.type === type) return user;
     }
     return null;
   }

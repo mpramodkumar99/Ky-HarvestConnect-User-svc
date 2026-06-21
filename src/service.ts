@@ -40,8 +40,8 @@ export class UserService {
   // ── User operations ──────────────────────────────────────────────────────
 
   async createUser(input: CreateUserInput): Promise<User> {
-    const existing = await this.users.findByPhone(input.phone);
-    if (existing) throw new ConflictError('Phone number is already registered');
+    const existing = await this.users.findByPhoneAndType(input.phone, input.type ?? 'buyer');
+    if (existing) throw new ConflictError(`Phone number is already registered as ${input.type ?? 'buyer'}`);
     return this.users.create(input);
   }
 
@@ -53,6 +53,10 @@ export class UserService {
 
   async getUserByPhone(phone: string): Promise<User | null> {
     return this.users.findByPhone(phone);
+  }
+
+  async getUserByPhoneAndType(phone: string, type: string): Promise<User | null> {
+    return this.users.findByPhoneAndType(phone, type);
   }
 
   async updateUser(id: string, input: UpdateUserInput): Promise<User> {

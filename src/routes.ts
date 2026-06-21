@@ -48,9 +48,14 @@ export function registerUserRoutes(app: FastifyInstance, service: UserService) {
     } catch (err) { return handleError(err, reply); }
   });
 
-  // GET /v1/users?phone= — used by auth-svc to validate a phone before issuing OTP
+  // GET /v1/users?phone=&type= — used by auth-svc to validate (phone, type) before issuing OTP
+  // Same phone can have separate seller, buyer, and agent accounts; type scopes the lookup
   app.get('/v1/users', async (request, reply) => {
-    const { phone } = request.query as { phone?: string };
+    const { phone, type } = request.query as { phone?: string; type?: string };
+    if (phone && type) {
+      const user = await service.getUserByPhoneAndType(phone, type);
+      return reply.send({ success: true, data: user ? [user] : [] });
+    }
     if (phone) {
       const user = await service.getUserByPhone(phone);
       return reply.send({ success: true, data: user ? [user] : [] });
