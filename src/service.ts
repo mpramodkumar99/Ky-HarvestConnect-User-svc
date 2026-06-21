@@ -4,10 +4,12 @@ import type {
   Seller, CreateSellerInput, UpdateSellerInput, SellerRole,
   SellerMember, CreateSellerMemberInput, UpdateSellerMemberInput,
   BankAccount, CreateBankAccountInput, UpdateBankAccountInput,
+  Agent, AgentStatus, AgentBank, AgentKyc, StoreOnboardingRequest,
 } from './types.js';
 import type {
   UserRepository, AddressRepository,
   SellerRepository, SellerMemberRepository, BankAccountRepository,
+  AgentRepository, AgentBankRepository, AgentKycRepository, OnboardingRepository,
 } from './repository.js';
 import type { GeocodePort } from './ports.js';
 
@@ -107,6 +109,7 @@ export class SellerService {
     private members: SellerMemberRepository,
     private bankAccounts: BankAccountRepository,
     private geocoder: GeocodePort,
+    private users: UserRepository,
   ) {}
 
   // ── Seller operations ────────────────────────────────────────────────────
@@ -157,8 +160,11 @@ export class SellerService {
   }
 
   async createSeller(input: CreateSellerInput): Promise<Seller> {
-    const existing = await this.sellers.findByPhone(input.phone);
-    if (existing) throw new ConflictError('Phone number is already registered as a seller');
+    const allForPhone = await this.sellers.findAll({ phone: input.phone });
+    const dupType = allForPhone.find(s => s.type === input.type);
+    if (dupType) {
+      throw new ConflictError(`You already have a ${input.type} store registered with this phone number`);
+    }
     const coords = await this.geocoder.fromPincode(input.pincode);
     return this.sellers.create(input, coords);
   }
@@ -204,8 +210,42 @@ export class SellerService {
   // ── Team member operations ───────────────────────────────────────────────
 
   async listMembers(sellerId: string): Promise<SellerMember[]> {
-    await this.getSeller(sellerId); // validates seller exists
-    return this.members.findBySellerId(sellerId);
+    const seller = await this.getSeller(sellerId);
+    const members = await this.members.findBySellerId(sellerId);
+
+    // Freshen denormalized names and profile photos from User records
+    const enriched = await Promise.all(members.map(async m => {
+      if (!m.userId) return m;
+      try {
+        const user = await this.users.findById(m.userId);
+        if (user) return { ...m, name: user.name, imageUrl: user.imageUrl };
+      } catch { /* user not found — keep stored values */ }
+      return m;
+    }));
+
+    // Prepend a synthetic owner entry so the owner always appears first
+    if (seller.userId) {
+      try {
+        const owner = await this.users.findById(seller.userId);
+        if (owner) {
+          const ownerMember: SellerMember = {
+            id:        `owner-${sellerId}`,
+            sellerId,
+            userId:    seller.userId,
+            name:      owner.name,
+            phone:     owner.phone,
+            role:      'owner',
+            status:    'active',
+            imageUrl:  owner.imageUrl,
+            invitedAt: seller.createdAt,
+            joinedAt:  seller.createdAt,
+          };
+          return [ownerMember, ...enriched];
+        }
+      } catch { /* owner user not found — fall through */ }
+    }
+
+    return enriched;
   }
 
   async inviteMember(
@@ -262,6 +302,52 @@ export class SellerService {
     await this.getSeller(sellerId);
     const updated = await this.bankAccounts.update(sellerId, input);
     if (!updated) throw new NotFoundError('No bank account found for this seller');
+    return updated;
+  }
+}
+
+// ── AgentService ──────────────────────────────────────────────────────────────
+
+export class AgentService {
+  constructor(
+    private agents:     AgentRepository,
+    private banks:      AgentBankRepository,
+    private kycs:       AgentKycRepository,
+    private onboarding: OnboardingRepository,
+  ) {}
+
+  async getAgent(userId: string): Promise<Agent> {
+    const agent = await this.agents.findByUserId(userId);
+    if (!agent) throw new NotFoundError(`Agent profile not found for user ${userId}`);
+    return agent;
+  }
+
+  async upsertAgent(userId: string, input: Partial<Omit<Agent, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'totalDeliveries' | 'rating' | 'kycVerified' | 'bankLinked'>>): Promise<Agent> {
+    return this.agents.upsert(userId, input);
+  }
+
+  async updateStatus(userId: string, status: AgentStatus): Promise<Agent> {
+    const agent = await this.agents.upsert(userId, { status });
+    return agent;
+  }
+
+  async setBank(userId: string, input: Omit<AgentBank, 'agentId' | 'updatedAt'>): Promise<void> {
+    await this.banks.upsert(userId, input);
+    await this.agents.upsert(userId, { bankLinked: true });
+  }
+
+  async setKyc(userId: string, input: Omit<AgentKyc, 'agentId' | 'updatedAt'>): Promise<void> {
+    await this.kycs.upsert(userId, input);
+    await this.agents.upsert(userId, { kycVerified: true });
+  }
+
+  async listOnboarding(): Promise<StoreOnboardingRequest[]> {
+    return this.onboarding.list();
+  }
+
+  async reviewOnboarding(id: string, status: 'approved' | 'rejected', notes?: string, agentId?: string): Promise<StoreOnboardingRequest> {
+    const updated = await this.onboarding.review(id, status, notes, agentId);
+    if (!updated) throw new NotFoundError(`Onboarding request ${id} not found`);
     return updated;
   }
 }

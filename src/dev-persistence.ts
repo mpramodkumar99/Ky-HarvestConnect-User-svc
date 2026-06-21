@@ -7,20 +7,32 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { User, Seller, SellerMember } from './types.js';
+import type { User, Seller, SellerMember, Agent, AgentBank, AgentKyc, StoreOnboardingRequest } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dir      = dirname(__filename);
 const DATA_FILE  = resolve(__dir, '..', 'dev-data.json');
 
 export interface DevData {
-  users:   User[];
-  sellers: Seller[];
-  members: SellerMember[];
+  users:       User[];
+  sellers:     Seller[];
+  members:     SellerMember[];
+  agents:      Agent[];
+  agentBanks:  AgentBank[];
+  agentKycs:   AgentKyc[];
+  onboarding:  StoreOnboardingRequest[];
 }
 
-// Shared snapshot — each repository owns its slice; flush writes them all together
-const snapshot: DevData = { users: [], sellers: [], members: [] };
+const _initial = loadDevData();
+const snapshot: DevData = {
+  users:      _initial?.users      ?? [],
+  sellers:    _initial?.sellers    ?? [],
+  members:    _initial?.members    ?? [],
+  agents:     _initial?.agents     ?? [],
+  agentBanks: _initial?.agentBanks ?? [],
+  agentKycs:  _initial?.agentKycs  ?? [],
+  onboarding: _initial?.onboarding ?? [],
+};
 
 export function loadDevData(): DevData | null {
   try {
@@ -44,6 +56,26 @@ export function persistSellers(sellers: Seller[]): void {
 
 export function persistMembers(members: SellerMember[]): void {
   snapshot.members = members;
+  flush();
+}
+
+export function persistAgents(agents: Agent[]): void {
+  snapshot.agents = agents;
+  flush();
+}
+
+export function persistAgentBanks(agentBanks: AgentBank[]): void {
+  snapshot.agentBanks = agentBanks;
+  flush();
+}
+
+export function persistAgentKycs(agentKycs: AgentKyc[]): void {
+  snapshot.agentKycs = agentKycs;
+  flush();
+}
+
+export function persistOnboarding(onboarding: StoreOnboardingRequest[]): void {
+  snapshot.onboarding = onboarding;
   flush();
 }
 

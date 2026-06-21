@@ -5,9 +5,10 @@ import type {
   Seller, CreateSellerInput, UpdateSellerInput,
   SellerMember, CreateSellerMemberInput, UpdateSellerMemberInput,
   BankAccount, CreateBankAccountInput, UpdateBankAccountInput,
+  Agent, AgentStatus, AgentBank, AgentKyc, StoreOnboardingRequest,
   GeoPoint,
 } from './types.js';
-import { loadDevData, persistUsers, persistSellers, persistMembers } from './dev-persistence.js';
+import { loadDevData, persistUsers, persistSellers, persistMembers, persistAgents, persistAgentBanks, persistAgentKycs, persistOnboarding } from './dev-persistence.js';
 
 // ── UserRepository ────────────────────────────────────────────────────────────
 
@@ -406,6 +407,140 @@ export class InMemoryBankAccountRepository implements BankAccountRepository {
       updatedAt: new Date().toISOString(),
     };
     this.store.set(sellerId, updated);
+    return updated;
+  }
+}
+
+// ── AgentRepository ───────────────────────────────────────────────────────────
+
+export interface AgentRepository {
+  findByUserId(userId: string): Promise<Agent | null>;
+  upsert(userId: string, input: Partial<Omit<Agent, 'id' | 'userId' | 'createdAt'>>): Promise<Agent>;
+}
+
+// Charset excludes visually confusable characters: 0/O, 1/I
+const AGT_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generateAgentId(existingIds: Set<string>): string {
+  let id: string;
+  do {
+    let code = '';
+    for (let i = 0; i < 6; i++) code += AGT_CHARS[Math.floor(Math.random() * AGT_CHARS.length)];
+    id = `AGT-${code}`;
+  } while (existingIds.has(id));
+  return id;
+}
+
+const SEED_AGENTS: Agent[] = [
+  { id: 'AGT-DEV001', userId: 'agent-001', name: 'Dev Agent', phone: '+919000000099', zone: 'Hyderabad', status: 'available', totalDeliveries: 0, rating: 5.0, kycVerified: false, bankLinked: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+];
+
+export class InMemoryAgentRepository implements AgentRepository {
+  private store: Map<string, Agent>;   // keyed by userId
+
+  constructor() {
+    const saved  = loadDevData();
+    const agents = saved?.agents?.length ? saved.agents : SEED_AGENTS;
+    this.store   = new Map(agents.map(a => [a.userId, a]));
+  }
+
+  async findByUserId(userId: string): Promise<Agent | null> {
+    return this.store.get(userId) ?? null;
+  }
+
+  async upsert(userId: string, input: Partial<Omit<Agent, 'id' | 'userId' | 'createdAt'>>): Promise<Agent> {
+    const now      = new Date().toISOString();
+    const existing = this.store.get(userId);
+    const agent: Agent = existing
+      ? { ...existing, ...input, updatedAt: now }
+      : {
+          id: generateAgentId(new Set([...this.store.values()].map(a => a.id))),
+          userId, name: '', phone: '', zone: '', status: 'available' as AgentStatus,
+          totalDeliveries: 0, rating: 5.0, kycVerified: false, bankLinked: false,
+          createdAt: now, updatedAt: now, ...input,
+        };
+    this.store.set(userId, agent);
+    persistAgents([...this.store.values()]);
+    return agent;
+  }
+}
+
+// ── AgentBankRepository ───────────────────────────────────────────────────────
+
+export interface AgentBankRepository {
+  upsert(agentId: string, input: Omit<AgentBank, 'agentId' | 'updatedAt'>): Promise<AgentBank>;
+}
+
+export class InMemoryAgentBankRepository implements AgentBankRepository {
+  private store: Map<string, AgentBank>;
+
+  constructor() {
+    const saved = loadDevData();
+    this.store  = new Map((saved?.agentBanks ?? []).map(b => [b.agentId, b]));
+  }
+
+  async upsert(agentId: string, input: Omit<AgentBank, 'agentId' | 'updatedAt'>): Promise<AgentBank> {
+    const record: AgentBank = { ...input, agentId, updatedAt: new Date().toISOString() };
+    this.store.set(agentId, record);
+    persistAgentBanks([...this.store.values()]);
+    return record;
+  }
+}
+
+// ── AgentKycRepository ────────────────────────────────────────────────────────
+
+export interface AgentKycRepository {
+  upsert(agentId: string, input: Omit<AgentKyc, 'agentId' | 'updatedAt'>): Promise<AgentKyc>;
+}
+
+export class InMemoryAgentKycRepository implements AgentKycRepository {
+  private store: Map<string, AgentKyc>;
+
+  constructor() {
+    const saved = loadDevData();
+    this.store  = new Map((saved?.agentKycs ?? []).map(k => [k.agentId, k]));
+  }
+
+  async upsert(agentId: string, input: Omit<AgentKyc, 'agentId' | 'updatedAt'>): Promise<AgentKyc> {
+    const record: AgentKyc = { ...input, agentId, updatedAt: new Date().toISOString() };
+    this.store.set(agentId, record);
+    persistAgentKycs([...this.store.values()]);
+    return record;
+  }
+}
+
+// ── OnboardingRepository ──────────────────────────────────────────────────────
+
+export interface OnboardingRepository {
+  list(): Promise<StoreOnboardingRequest[]>;
+  review(id: string, status: 'approved' | 'rejected', notes?: string, agentId?: string): Promise<StoreOnboardingRequest | null>;
+}
+
+const SEED_ONBOARDING: StoreOnboardingRequest[] = [
+  { id: 'onb-001', storeName: 'Ramaiah Vegetables', ownerName: 'Ramaiah', phone: '+919876543210', location: 'Kondapur, Hyderabad', pincode: '500084', storeType: 'farmer', status: 'pending', submittedAt: new Date(Date.now() - 2 * 86400000).toISOString() },
+  { id: 'onb-002', storeName: 'Lakshmi Dairy',      ownerName: 'Lakshmi Devi', phone: '+919876543211', location: 'Kukatpally, Hyderabad', pincode: '500072', storeType: 'dairy',  status: 'pending', submittedAt: new Date(Date.now() - 86400000).toISOString() },
+  { id: 'onb-003', storeName: 'Srinivas Kirana',    ownerName: 'Srinivas Rao', phone: '+919876543212', location: 'LB Nagar, Hyderabad',  pincode: '500074', storeType: 'kirana', status: 'approved', submittedAt: new Date(Date.now() - 5 * 86400000).toISOString(), notes: 'Documents verified' },
+];
+
+export class InMemoryOnboardingRepository implements OnboardingRepository {
+  private store: Map<string, StoreOnboardingRequest>;
+
+  constructor() {
+    const saved = loadDevData();
+    const data  = saved?.onboarding?.length ? saved.onboarding : SEED_ONBOARDING;
+    this.store  = new Map(data.map(r => [r.id, r]));
+  }
+
+  async list(): Promise<StoreOnboardingRequest[]> {
+    return [...this.store.values()].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  }
+
+  async review(id: string, status: 'approved' | 'rejected', notes?: string, agentId?: string): Promise<StoreOnboardingRequest | null> {
+    const existing = this.store.get(id);
+    if (!existing) return null;
+    const updated: StoreOnboardingRequest = { ...existing, status, ...(notes ? { notes } : {}), ...(agentId ? { reviewedByAgentId: agentId } : {}) };
+    this.store.set(id, updated);
+    persistOnboarding([...this.store.values()]);
     return updated;
   }
 }

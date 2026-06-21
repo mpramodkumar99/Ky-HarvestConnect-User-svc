@@ -10,13 +10,14 @@ export type ShipsTo = 'mandal' | 'district' | 'state' | 'national';
 
 // ── User ──────────────────────────────────────────────────────────────────────
 
-export type UserType = 'buyer' | 'seller';
+export type UserType = 'buyer' | 'seller' | 'agent';
 
 export interface User {
   id: string;
   name: string;
   phone: string;       // E.164 format: +919876543210
   email?: string;
+  imageUrl?: string;   // user profile photo URL
   type: UserType;
   verified: boolean;   // reserved for future KYC / email verification
   createdAt: string;   // ISO timestamp, write-once
@@ -57,7 +58,8 @@ export type UpdateAddressInput = Partial<CreateAddressInput>;
 
 // ── Seller ────────────────────────────────────────────────────────────────────
 
-export type SellerType = 'farmer' | 'artisan' | 'dairy' | 'homefood' | 'trades';
+export type SellerType = 'farmer' | 'artisan' | 'dairy' | 'homefood' | 'trades' | 'kirana';
+export type BusinessType = 'retail' | 'wholesale';
 
 export interface Seller {
   id: string;
@@ -67,13 +69,23 @@ export interface Seller {
   phone: string;             // E.164, natural unique key
   email?: string;
   description?: string;      // store description shown in Store Settings
-  imageUrl?: string;         // store logo / photo URL
+  imageUrl?: string;         // store logo / profile icon URL
+  bannerUrl?: string;        // wide banner image shown behind store header
   location: string;          // display string e.g. "Nizamabad, Telangana"
   pincode: string;           // stored so re-geocoding is possible on location updates
   lat: number;               // from GeocodePort
   lng: number;               // from GeocodePort
   deliveryZones: ShipsTo[];  // seller-level coverage; individual products may narrow this
   fssaiNumber?: string;
+  businessType?: BusinessType; // kirana only — retail or wholesale
+  address?: string;          // full street / area address displayed on store profile
+  socialHandles?: {
+    instagram?: string;
+    facebook?:  string;
+    whatsapp?:  string;
+    website?:   string;
+    youtube?:   string;
+  };
   verified: boolean;         // always false on create; admin-only flip
   verifiedAt?: string;       // ISO timestamp set at the moment of verification
   documentUrls: string[];    // uploaded via StoragePort (FSSAI scan, Aadhaar etc.)
@@ -108,6 +120,7 @@ export interface SellerMember {
   phone: string;        // used to match the invite when the invitee logs in
   role: SellerRole;
   status: MemberStatus;
+  imageUrl?: string;    // user's profile photo — enriched at query time, not stored
   invitedAt: string;    // ISO timestamp
   joinedAt?: string;    // set when status transitions to 'active'
 }
@@ -117,6 +130,63 @@ export type CreateSellerMemberInput = Omit<
 >;
 
 export type UpdateSellerMemberInput = Pick<SellerMember, 'role'>;
+
+// ── Agent ─────────────────────────────────────────────────────────────────────
+
+export type AgentStatus = 'available' | 'on_delivery' | 'offline';
+
+export interface Agent {
+  id:               string;   // same as userId for simplicity
+  userId:           string;
+  name:             string;
+  phone:            string;
+  email?:           string;
+  vehicleType?:     string;
+  vehicleNumber?:   string;
+  zone:             string;
+  status:           AgentStatus;
+  totalDeliveries:  number;
+  rating:           number;
+  kycVerified:      boolean;
+  bankLinked:       boolean;
+  createdAt:        string;
+  updatedAt:        string;
+}
+
+export interface AgentBank {
+  agentId:           string;
+  accountHolderName: string;
+  accountNumber:     string;
+  ifscCode:          string;
+  bankName:          string;
+  upiId?:            string;
+  updatedAt:         string;
+}
+
+export interface AgentKyc {
+  agentId:               string;
+  aadhaarNumber:         string;
+  panNumber:             string;
+  drivingLicenseNumber:  string;
+  vehicleRcNumber:       string;
+  insurancePolicyNumber?: string;
+  updatedAt:             string;
+}
+
+export interface StoreOnboardingRequest {
+  id:                  string;
+  storeName:           string;
+  ownerName:           string;
+  phone:               string;
+  location:            string;
+  pincode:             string;
+  storeType:           string;
+  kycDocUrl?:          string;
+  status:              'pending' | 'approved' | 'rejected';
+  submittedAt:         string;
+  notes?:              string;
+  reviewedByAgentId?:  string;
+}
 
 // ── BankAccount ───────────────────────────────────────────────────────────────
 // Payment details for a seller. At most one per seller (upsert semantics).
