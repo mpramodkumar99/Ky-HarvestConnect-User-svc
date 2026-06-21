@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import type { UserService, SellerService } from './service.js';
+import type { UserService, SellerService, AgentService } from './service.js';
 import { NotFoundError, ConflictError, ForbiddenError } from './service.js';
 import {
   createUserSchema, updateUserSchema,
@@ -8,6 +8,8 @@ import {
   createSellerMemberSchema, updateSellerMemberSchema,
   createBankAccountSchema, updateBankAccountSchema,
   addDocumentSchema, removeDocumentSchema,
+  updateAgentSchema, updateAgentStatusSchema,
+  agentBankSchema, agentKycSchema, reviewOnboardingSchema,
 } from './schemas.js';
 
 // Dev-only admin key — placeholder until auth-svc (UC-AUTH-01) is built.
@@ -46,9 +48,14 @@ export function registerUserRoutes(app: FastifyInstance, service: UserService) {
     } catch (err) { return handleError(err, reply); }
   });
 
-  // GET /v1/users?phone= — used by auth-svc to validate a phone before issuing OTP
+  // GET /v1/users?phone=&type= — used by auth-svc to validate (phone, type) before issuing OTP
+  // Same phone can have separate seller, buyer, and agent accounts; type scopes the lookup
   app.get('/v1/users', async (request, reply) => {
-    const { phone } = request.query as { phone?: string };
+    const { phone, type } = request.query as { phone?: string; type?: string };
+    if (phone && type) {
+      const user = await service.getUserByPhoneAndType(phone, type);
+      return reply.send({ success: true, data: user ? [user] : [] });
+    }
     if (phone) {
       const user = await service.getUserByPhone(phone);
       return reply.send({ success: true, data: user ? [user] : [] });
@@ -372,6 +379,92 @@ export function registerSellerRoutes(app: FastifyInstance, service: SellerServic
         success: true,
         data: { ...account, accountNumber: `···${account.accountNumber.slice(-4)}` },
       });
+    } catch (err) { return handleError(err, reply); }
+  });
+}
+
+// ── Agent routes ──────────────────────────────────────────────────────────────
+
+export function registerAgentRoutes(app: FastifyInstance, service: AgentService) {
+
+  // GET /v1/agents/:userId
+  app.get('/v1/agents/:userId', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    try {
+      const agent = await service.getAgent(userId);
+      return reply.send({ success: true, data: agent });
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // PATCH /v1/agents/:userId — update profile fields
+  app.patch('/v1/agents/:userId', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const parsed = updateAgentSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid agent data', status: 400, detail: parsed.error.issues } });
+    }
+    try {
+      const agent = await service.upsertAgent(userId, parsed.data);
+      return reply.send({ success: true, data: agent });
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // PATCH /v1/agents/:userId/status
+  app.patch('/v1/agents/:userId/status', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const parsed = updateAgentStatusSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid status', status: 400 } });
+    }
+    try {
+      const agent = await service.updateStatus(userId, parsed.data.status);
+      return reply.send({ success: true, data: agent });
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // PUT /v1/agents/:userId/bank
+  app.put('/v1/agents/:userId/bank', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const parsed = agentBankSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid bank data', status: 400, detail: parsed.error.issues } });
+    }
+    try {
+      await service.setBank(userId, parsed.data);
+      return reply.status(204).send();
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // PUT /v1/agents/:userId/kyc
+  app.put('/v1/agents/:userId/kyc', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const parsed = agentKycSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid KYC data', status: 400, detail: parsed.error.issues } });
+    }
+    try {
+      await service.setKyc(userId, parsed.data);
+      return reply.status(204).send();
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // GET /v1/stores/onboarding
+  app.get('/v1/stores/onboarding', async (_request, reply) => {
+    const requests = await service.listOnboarding();
+    return reply.send({ success: true, data: requests, meta: { total: requests.length } });
+  });
+
+  // PATCH /v1/stores/onboarding/:requestId
+  app.patch('/v1/stores/onboarding/:requestId', async (request, reply) => {
+    const { requestId } = request.params as { requestId: string };
+    const parsed = reviewOnboardingSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid review data', status: 400 } });
+    }
+    const agentId = (request.headers['x-agent-id'] as string | undefined)?.trim();
+    try {
+      const result = await service.reviewOnboarding(requestId, parsed.data.status, parsed.data.notes, agentId);
+      return reply.send({ success: true, data: result });
     } catch (err) { return handleError(err, reply); }
   });
 }
