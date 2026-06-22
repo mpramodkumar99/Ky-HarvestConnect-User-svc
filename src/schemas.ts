@@ -22,9 +22,13 @@ export const createUserSchema = z.object({
   type:  z.enum(['buyer', 'seller']).default('buyer'),
 });
 
-// phone is immutable — excluded entirely from updates
+// phone is immutable — excluded entirely from updates.
+// `type` is re-declared without `.default()`: zod's `.partial()` still applies
+// a field's `.default()` when the key is omitted, which would silently reset
+// `type` to 'buyer' on any PATCH that doesn't include it.
 export const updateUserSchema = createUserSchema
   .omit({ phone: true })
+  .extend({ type: z.enum(['buyer', 'seller']) })
   .partial();
 
 // ── Address schemas ───────────────────────────────────────────────────────────
@@ -40,8 +44,13 @@ export const createAddressSchema = z.object({
   isDefault: z.boolean().default(false),
 });
 
-// Every field optional on PATCH — service re-geocodes only when pincode changes
-export const updateAddressSchema = createAddressSchema.partial();
+// Every field optional on PATCH — service re-geocodes only when pincode changes.
+// `label`/`isDefault` are re-declared without `.default()`: zod's `.partial()`
+// still applies a field's `.default()` when the key is omitted, which would
+// silently reset these to 'Home'/false on every PATCH that doesn't include them.
+export const updateAddressSchema = createAddressSchema
+  .extend({ label: z.string().min(1).max(30), isDefault: z.boolean() })
+  .partial();
 
 // ── Seller schemas ────────────────────────────────────────────────────────────
 
@@ -61,8 +70,12 @@ export const createSellerSchema = z.object({
 
 // phone immutable — excluded from seller updates as well
 // documentUrls managed via dedicated /documents endpoint
+// `deliveryZones` re-declared without `.default()`: zod's `.partial()` still
+// applies a field's `.default()` when the key is omitted, which would
+// silently wipe deliveryZones to [] on any PATCH that doesn't include it.
 export const updateSellerSchema = createSellerSchema
   .omit({ phone: true })
+  .extend({ deliveryZones: z.array(z.enum(shipsToValues)) })
   .partial();
 
 // ── SellerMember schemas ──────────────────────────────────────────────────────

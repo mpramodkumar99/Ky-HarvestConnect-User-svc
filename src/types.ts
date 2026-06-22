@@ -15,18 +15,54 @@ export type UserType = 'buyer' | 'seller';
 export interface User {
   id: string;
   name: string;
-  phone: string;       // E.164 format: +919876543210
+  phone: string;           // E.164 format: +919876543210
   email?: string;
   type: UserType;
-  verified: boolean;   // reserved for future KYC / email verification
-  createdAt: string;   // ISO timestamp, write-once
-  updatedAt: string;   // ISO timestamp, set on every write
+  verified: boolean;       // reserved for future KYC / email verification
+  walletBalance: number;   // paise (divide by 100 for ₹)
+  referralCode?: string;   // unique 6-char code; generated at first use if missing
+  createdAt: string;       // ISO timestamp, write-once
+  updatedAt: string;       // ISO timestamp, set on every write
+}
+
+export interface Referral {
+  id: string;
+  referrerId: string;
+  refereeId: string;
+  status: 'pending' | 'rewarded';
+  rewardReferrerPaise: number;
+  rewardRefereePaise: number;
+  orderId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReferralStats {
+  code: string;
+  totalReferrals: number;
+  pendingReferrals: number;
+  rewardedReferrals: number;
+  totalEarnedPaise: number;
+}
+
+export type WalletTxnType = 'credit' | 'debit';
+
+export interface WalletTransaction {
+  id:          string;
+  userId:      string;
+  type:        WalletTxnType;
+  amount:      number;    // paise, always positive
+  balance:     number;    // wallet balance after this transaction
+  description: string;
+  source?:     string;    // 'upi' | 'card' | 'order' | 'refund'
+  referenceId?: string;
+  createdAt:   string;
 }
 
 // phone excluded — immutable after creation
-// verified, id, timestamps are server-managed
-export type CreateUserInput = Omit<User, 'id' | 'createdAt' | 'updatedAt' | 'verified'>;
-export type UpdateUserInput = Partial<Omit<CreateUserInput, 'phone'>>;
+// verified, referralCode, id, timestamps are server-managed
+export type CreateUserInput = Omit<User, 'id' | 'createdAt' | 'updatedAt' | 'verified' | 'referralCode'>;
+export type UpdateUserInput = Partial<Omit<CreateUserInput, 'phone'>> & { referralCode?: string };
 
 // ── Address ───────────────────────────────────────────────────────────────────
 
@@ -135,3 +171,26 @@ export interface BankAccount {
 
 export type CreateBankAccountInput = Omit<BankAccount, 'id' | 'sellerId' | 'createdAt' | 'updatedAt'>;
 export type UpdateBankAccountInput = Partial<CreateBankAccountInput>;
+
+export interface WishlistItem {
+  id: string;
+  userId: string;
+  productId: string;
+  createdAt: string;
+}
+
+export interface CartItem {
+  id: string;
+  userId: string;
+  productId: string;
+  productName: string;
+  vendorId: string;
+  vendorName: string;
+  quantity: number;
+  unitPrice: number;
+  image: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type UpsertCartItemInput = Omit<CartItem, 'id' | 'userId' | 'createdAt' | 'updatedAt'>;

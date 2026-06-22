@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import type { UserService, SellerService } from './service.js';
-import { NotFoundError, ConflictError, ForbiddenError } from './service.js';
+import { z } from 'zod';
+import type { UserService, SellerService, WishlistService, CartService, WalletService, ReferralService } from './service.js';
+import { NotFoundError, ConflictError, ForbiddenError, BadRequestError } from './service.js';
 import {
   createUserSchema, updateUserSchema,
   createAddressSchema, updateAddressSchema,
@@ -16,13 +17,16 @@ const ADMIN_KEY = process.env['ADMIN_KEY'] ?? 'dev-admin-key';
 // Shared error-to-HTTP mapping — keeps every route handler DRY.
 function handleError(err: unknown, reply: FastifyReply) {
   if (err instanceof NotFoundError) {
-    return reply.status(404).send({ success: false, error: { type: 'not_found',   title: err.message, status: 404 } });
+    return reply.status(404).send({ success: false, error: { type: 'not_found',      title: err.message, status: 404 } });
   }
   if (err instanceof ConflictError) {
-    return reply.status(409).send({ success: false, error: { type: 'conflict',    title: err.message, status: 409 } });
+    return reply.status(409).send({ success: false, error: { type: 'conflict',       title: err.message, status: 409 } });
   }
   if (err instanceof ForbiddenError) {
-    return reply.status(403).send({ success: false, error: { type: 'forbidden',   title: err.message, status: 403 } });
+    return reply.status(403).send({ success: false, error: { type: 'forbidden',      title: err.message, status: 403 } });
+  }
+  if (err instanceof BadRequestError) {
+    return reply.status(400).send({ success: false, error: { type: 'bad_request',    title: err.message, status: 400 } });
   }
   throw err;
 }
@@ -30,6 +34,16 @@ function handleError(err: unknown, reply: FastifyReply) {
 // ── User routes ───────────────────────────────────────────────────────────────
 
 export function registerUserRoutes(app: FastifyInstance, service: UserService) {
+
+  // GET /v1/users?phone=... — phone lookup used by auth-svc before issuing OTP
+  app.get('/v1/users', async (request, reply) => {
+    const { phone } = request.query as { phone?: string };
+    if (!phone) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'phone query param is required', status: 400 } });
+    }
+    const user = await service.getUserByPhone(phone);
+    return reply.send({ success: true, data: user ? [user] : [], meta: { total: user ? 1 : 0 } });
+  });
 
   // POST /v1/users — create buyer/seller user profile (UC-USR-01)
   app.post('/v1/users', async (request, reply) => {
@@ -51,6 +65,22 @@ export function registerUserRoutes(app: FastifyInstance, service: UserService) {
     const { id } = request.params as { id: string };
     try {
       const user = await service.getUser(id);
+      return reply.send({ success: true, data: user });
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // PATCH /v1/users/:id/verify — internal: called by auth-svc after OTP confirmed
+  app.patch('/v1/users/:id/verify', async (request, reply) => {
+    const adminKey = (request.headers['x-admin-key'] as string | undefined)?.trim();
+    if (!adminKey || adminKey !== ADMIN_KEY) {
+      return reply.status(403).send({
+        success: false,
+        error: { type: 'forbidden', title: 'Valid X-Admin-Key header required', status: 403 },
+      });
+    }
+    const { id } = request.params as { id: string };
+    try {
+      const user = await service.verifyUser(id);
       return reply.send({ success: true, data: user });
     } catch (err) { return handleError(err, reply); }
   });
@@ -374,5 +404,171 @@ export function registerCrossRoutes(
     const { id } = request.params as { id: string };
     const sellers = await sellerService.listSellersByUser(id);
     return reply.send({ success: true, data: sellers, meta: { total: sellers.length } });
+  });
+}
+
+// ── Wishlist routes ───────────────────────────────────────────────────────────
+
+export function registerWishlistRoutes(app: FastifyInstance, service: WishlistService) {
+  app.get('/v1/users/:id/wishlist', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const items = await service.list(id);
+    return reply.send({ success: true, data: items.map(i => i.productId) });
+  });
+
+  app.put('/v1/users/:id/wishlist/:productId', async (request, reply) => {
+    const { id, productId } = request.params as { id: string; productId: string };
+    const item = await service.add(id, productId);
+    return reply.status(200).send({ success: true, data: item });
+  });
+
+  app.delete('/v1/users/:id/wishlist/:productId', async (request, reply) => {
+    const { id, productId } = request.params as { id: string; productId: string };
+    await service.remove(id, productId);
+    return reply.status(204).send();
+  });
+}
+
+// ── Cart routes ───────────────────────────────────────────────────────────────
+
+const upsertCartSchema = z.object({
+  productId:   z.string(),
+  productName: z.string(),
+  vendorId:    z.string(),
+  vendorName:  z.string(),
+  quantity:    z.number().int().positive(),
+  unitPrice:   z.number().int().positive(),
+  image:       z.string().nullable().optional(),
+});
+
+export function registerCartRoutes(app: FastifyInstance, service: CartService) {
+  app.get('/v1/users/:id/cart', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const items = await service.list(id);
+    return reply.send({ success: true, data: items });
+  });
+
+  app.put('/v1/users/:id/cart/:productId', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = upsertCartSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid cart item', status: 400 } });
+    }
+    const item = await service.upsert(id, { ...parsed.data, image: parsed.data.image ?? null });
+    return reply.send({ success: true, data: item });
+  });
+
+  app.delete('/v1/users/:id/cart/:productId', async (request, reply) => {
+    const { id, productId } = request.params as { id: string; productId: string };
+    await service.remove(id, productId);
+    return reply.status(204).send();
+  });
+
+  app.delete('/v1/users/:id/cart', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    await service.clear(id);
+    return reply.status(204).send();
+  });
+}
+
+// ── Wallet routes ─────────────────────────────────────────────────────────────
+
+const topupSchema = z.object({
+  amount:          z.number().int().positive(),
+  paymentMethod:   z.string().min(1),
+  paymentMethodId: z.string().optional(),
+});
+
+export function registerWalletRoutes(app: FastifyInstance, service: WalletService) {
+
+  app.get('/v1/users/:id/wallet', async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const wallet = await service.getWallet(id);
+      return reply.send({ success: true, data: wallet });
+    } catch (err) {
+      console.error(err);
+      return reply.status(500).send({ success: false, error: { type: 'internal_error', title: 'Internal server error', status: 500 } });
+    }
+  });
+
+  app.post('/v1/users/:id/wallet/topup', async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const parsed = topupSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid top-up data', status: 400 } });
+      }
+      const { amount, paymentMethod, paymentMethodId } = parsed.data;
+      const result = await service.topup(id, amount, paymentMethod, paymentMethodId);
+      return reply.status(201).send({ success: true, data: result });
+    } catch (err) {
+      if (err instanceof Error) {
+        return reply.status(400).send({ success: false, error: { type: 'BadRequest', title: err.message, status: 400 } });
+      }
+      return reply.status(500).send({ success: false, error: { type: 'internal_error', title: 'Internal server error', status: 500 } });
+    }
+  });
+
+  app.post('/v1/users/:id/wallet/debit', async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const parsed = z.object({ amount: z.number().int().positive(), orderId: z.string() }).safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid debit data', status: 400 } });
+      }
+      const result = await service.debit(id, parsed.data.amount, parsed.data.orderId);
+      return reply.status(201).send({ success: true, data: result });
+    } catch (err) {
+      if (err instanceof Error) {
+        return reply.status(400).send({ success: false, error: { type: 'BadRequest', title: err.message, status: 400 } });
+      }
+      return reply.status(500).send({ success: false, error: { type: 'internal_error', title: 'Internal server error', status: 500 } });
+    }
+  });
+}
+
+// ── Referral routes ───────────────────────────────────────────────────────────
+
+export function registerReferralRoutes(app: FastifyInstance, service: ReferralService) {
+
+  // GET /v1/users/:id/referral — get user's referral code + stats + history
+  app.get('/v1/users/:id/referral', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const stats = await service.getStats(id);
+      return reply.send({ success: true, data: stats });
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // POST /v1/users/:id/referral/apply — new user applies a referral code after signup
+  app.post('/v1/users/:id/referral/apply', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z.object({ code: z.string().min(4).max(10) }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'Invalid code', status: 400 } });
+    }
+    try {
+      await service.applyCode(id, parsed.data.code);
+      return reply.status(200).send({ success: true });
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // POST /v1/users/:id/referral/reward — internal: trigger referrer reward on first order
+  app.post('/v1/users/:id/referral/reward', async (request, reply) => {
+    const adminKey = (request.headers['x-admin-key'] as string | undefined)?.trim();
+    const ADMIN_KEY = process.env['ADMIN_KEY'] ?? 'dev-admin-key';
+    if (!adminKey || adminKey !== ADMIN_KEY) {
+      return reply.status(403).send({ success: false, error: { type: 'forbidden', title: 'Valid X-Admin-Key header required', status: 403 } });
+    }
+    const { id } = request.params as { id: string };
+    const parsed = z.object({ orderId: z.string() }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ success: false, error: { type: 'validation_error', title: 'orderId required', status: 400 } });
+    }
+    try {
+      await service.rewardReferrer(id, parsed.data.orderId);
+      return reply.status(200).send({ success: true });
+    } catch (err) { return handleError(err, reply); }
   });
 }

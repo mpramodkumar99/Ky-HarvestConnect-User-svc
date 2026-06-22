@@ -6,19 +6,43 @@ import type {
   SellerMember, CreateSellerMemberInput, UpdateSellerMemberInput,
   BankAccount, CreateBankAccountInput, UpdateBankAccountInput,
   GeoPoint,
+  WishlistItem, CartItem, UpsertCartItemInput,
+  WalletTransaction,
+  Referral,
 } from './types.js';
+
+export function generateReferralCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous I, O, 0, 1
+  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
 
 // ── UserRepository ────────────────────────────────────────────────────────────
 
 export interface UserRepository {
   findById(id: string): Promise<User | null>;
   findByPhone(phone: string): Promise<User | null>;
+  findByReferralCode(code: string): Promise<User | null>;
   create(input: CreateUserInput): Promise<User>;
   update(id: string, input: UpdateUserInput): Promise<User | null>;
+  verify(id: string): Promise<User | null>;
 }
 
 export class InMemoryUserRepository implements UserRepository {
   private store = new Map<string, User>();
+
+  constructor() { this.seed(); }
+
+  private seed() {
+    const now = new Date().toISOString();
+    const devUsers: User[] = [
+      { id: 'user-b001', name: 'Dev Buyer 1',   phone: '+919000000001', type: 'buyer',  verified: true, walletBalance: 0, createdAt: now, updatedAt: now },
+      { id: 'user-b002', name: 'Dev Buyer 2',   phone: '+919000000002', type: 'buyer',  verified: true, walletBalance: 0, createdAt: now, updatedAt: now },
+      { id: 'user-s112', name: 'Desi Dairy',    phone: '+919000000112', type: 'seller', verified: true, walletBalance: 0, createdAt: now, updatedAt: now },
+      { id: 'user-s113', name: 'Amma Kitchen',  phone: '+919000000113', type: 'seller', verified: true, walletBalance: 0, createdAt: now, updatedAt: now },
+      { id: 'user-s105', name: 'Spice Route',   phone: '+919000000105', type: 'seller', verified: true, walletBalance: 0, createdAt: now, updatedAt: now },
+    ];
+    for (const u of devUsers) this.store.set(u.id, u);
+  }
 
   async findById(id: string): Promise<User | null> {
     return this.store.get(id) ?? null;
@@ -31,14 +55,22 @@ export class InMemoryUserRepository implements UserRepository {
     return null;
   }
 
+  async findByReferralCode(code: string): Promise<User | null> {
+    for (const user of this.store.values()) {
+      if (user.referralCode === code) return user;
+    }
+    return null;
+  }
+
   async create(input: CreateUserInput): Promise<User> {
     const now = new Date().toISOString();
     const user: User = {
       ...input,
-      id:        randomUUID(),
-      verified:  false,
-      createdAt: now,
-      updatedAt: now,
+      id:           randomUUID(),
+      referralCode: generateReferralCode(),
+      verified:     false,
+      createdAt:    now,
+      updatedAt:    now,
     };
     this.store.set(user.id, user);
     return user;
@@ -48,6 +80,14 @@ export class InMemoryUserRepository implements UserRepository {
     const existing = this.store.get(id);
     if (!existing) return null;
     const updated: User = { ...existing, ...input, updatedAt: new Date().toISOString() };
+    this.store.set(id, updated);
+    return updated;
+  }
+
+  async verify(id: string): Promise<User | null> {
+    const existing = this.store.get(id);
+    if (!existing) return null;
+    const updated: User = { ...existing, verified: true, updatedAt: new Date().toISOString() };
     this.store.set(id, updated);
     return updated;
   }
@@ -468,6 +508,176 @@ export class InMemoryBankAccountRepository implements BankAccountRepository {
       updatedAt: new Date().toISOString(),
     };
     this.store.set(sellerId, updated);
+    return updated;
+  }
+}
+
+// ── WishlistRepository ────────────────────────────────────────────────────────
+
+export interface WishlistRepository {
+  findByUserId(userId: string): Promise<WishlistItem[]>;
+  add(userId: string, productId: string): Promise<WishlistItem>;
+  remove(userId: string, productId: string): Promise<boolean>;
+}
+
+export class InMemoryWishlistRepository implements WishlistRepository {
+  private store: WishlistItem[] = [];
+
+  async findByUserId(userId: string): Promise<WishlistItem[]> {
+    return this.store.filter(w => w.userId === userId);
+  }
+
+  async add(userId: string, productId: string): Promise<WishlistItem> {
+    const existing = this.store.find(w => w.userId === userId && w.productId === productId);
+    if (existing) return existing;
+    const item: WishlistItem = { id: randomUUID(), userId, productId, createdAt: new Date().toISOString() };
+    this.store.push(item);
+    return item;
+  }
+
+  async remove(userId: string, productId: string): Promise<boolean> {
+    const before = this.store.length;
+    this.store = this.store.filter(w => !(w.userId === userId && w.productId === productId));
+    return this.store.length < before;
+  }
+}
+
+// ── CartRepository ────────────────────────────────────────────────────────────
+
+export interface CartRepository {
+  findByUserId(userId: string): Promise<CartItem[]>;
+  upsert(userId: string, input: UpsertCartItemInput): Promise<CartItem>;
+  remove(userId: string, productId: string): Promise<boolean>;
+  clear(userId: string): Promise<void>;
+}
+
+export class InMemoryCartRepository implements CartRepository {
+  private store: CartItem[] = [];
+
+  async findByUserId(userId: string): Promise<CartItem[]> {
+    return this.store.filter(c => c.userId === userId);
+  }
+
+  async upsert(userId: string, input: UpsertCartItemInput): Promise<CartItem> {
+    const now = new Date().toISOString();
+    const idx = this.store.findIndex(c => c.userId === userId && c.productId === input.productId);
+    if (idx >= 0) {
+      this.store[idx] = { ...this.store[idx]!, ...input, userId, updatedAt: now };
+      return this.store[idx]!;
+    }
+    const item: CartItem = { id: randomUUID(), userId, ...input, createdAt: now, updatedAt: now };
+    this.store.push(item);
+    return item;
+  }
+
+  async remove(userId: string, productId: string): Promise<boolean> {
+    const before = this.store.length;
+    this.store = this.store.filter(c => !(c.userId === userId && c.productId === productId));
+    return this.store.length < before;
+  }
+
+  async clear(userId: string): Promise<void> {
+    this.store = this.store.filter(c => c.userId !== userId);
+  }
+}
+
+// ── WalletRepository ──────────────────────────────────────────────────────────
+
+export interface WalletRepository {
+  getBalance(userId: string): Promise<number>;
+  credit(userId: string, amount: number, description: string, source?: string, referenceId?: string): Promise<WalletTransaction>;
+  debit(userId: string, amount: number, description: string, source?: string, referenceId?: string): Promise<WalletTransaction>;
+  listTransactions(userId: string, limit?: number): Promise<WalletTransaction[]>;
+}
+
+export class InMemoryWalletRepository implements WalletRepository {
+  private balances   = new Map<string, number>();
+  private txns: WalletTransaction[] = [];
+
+  async getBalance(userId: string): Promise<number> {
+    return this.balances.get(userId) ?? 0;
+  }
+
+  async credit(userId: string, amount: number, description: string, source?: string, referenceId?: string): Promise<WalletTransaction> {
+    const current    = await this.getBalance(userId);
+    const newBalance = current + amount;
+    this.balances.set(userId, newBalance);
+    const txn: WalletTransaction = {
+      id: randomUUID(), userId, type: 'credit', amount,
+      balance: newBalance, description,
+      source, referenceId,
+      createdAt: new Date().toISOString(),
+    };
+    this.txns.unshift(txn);
+    return txn;
+  }
+
+  async debit(userId: string, amount: number, description: string, source?: string, referenceId?: string): Promise<WalletTransaction> {
+    const current = await this.getBalance(userId);
+    if (current < amount) throw new Error('Insufficient wallet balance');
+    const newBalance = current - amount;
+    this.balances.set(userId, newBalance);
+    const txn: WalletTransaction = {
+      id: randomUUID(), userId, type: 'debit', amount,
+      balance: newBalance, description,
+      source, referenceId,
+      createdAt: new Date().toISOString(),
+    };
+    this.txns.unshift(txn);
+    return txn;
+  }
+
+  async listTransactions(userId: string, limit = 20): Promise<WalletTransaction[]> {
+    return this.txns.filter(t => t.userId === userId).slice(0, limit);
+  }
+}
+
+// ── ReferralRepository ────────────────────────────────────────────────────────
+
+export interface ReferralRepository {
+  findByRefereeId(refereeId: string): Promise<Referral | null>;
+  findByReferrerId(referrerId: string): Promise<Referral[]>;
+  create(referrerId: string, refereeId: string): Promise<Referral>;
+  markRewarded(refereeId: string, orderId: string): Promise<Referral | null>;
+}
+
+export class InMemoryReferralRepository implements ReferralRepository {
+  private store: Referral[] = [];
+
+  async findByRefereeId(refereeId: string): Promise<Referral | null> {
+    return this.store.find(r => r.refereeId === refereeId) ?? null;
+  }
+
+  async findByReferrerId(referrerId: string): Promise<Referral[]> {
+    return this.store.filter(r => r.referrerId === referrerId);
+  }
+
+  async create(referrerId: string, refereeId: string): Promise<Referral> {
+    const now = new Date().toISOString();
+    const referral: Referral = {
+      id:                  randomUUID(),
+      referrerId,
+      refereeId,
+      status:              'pending',
+      rewardReferrerPaise: 10000,
+      rewardRefereePaise:  5000,
+      createdAt:           now,
+      updatedAt:           now,
+    };
+    this.store.push(referral);
+    return referral;
+  }
+
+  async markRewarded(refereeId: string, orderId: string): Promise<Referral | null> {
+    const idx = this.store.findIndex(r => r.refereeId === refereeId);
+    if (idx < 0) return null;
+    const updated: Referral = {
+      ...this.store[idx]!,
+      status:    'rewarded',
+      orderId,
+      updatedAt: new Date().toISOString(),
+    };
+    this.store[idx] = updated;
     return updated;
   }
 }
